@@ -2,7 +2,7 @@ import numpy as np
 import scipy.special as sp
 from joblib import Parallel, delayed
 from matplotlib import pyplot as plt
-import optimizers
+import optimizers, prior_sample
 
 def wasserstein(sample_size, target, sample, cutoff=0.01):
     """Calculate 1-dimensional Wasserstein distance between two sets of data
@@ -68,7 +68,7 @@ class Laplace():
         return np.concatenate((left_quantiles,right_quantiles))
     
 def run(sample_size = 5000, simulation_num = 200, 
-        d = 2, scale=1, step_size=0.1, iterations=200, 
+        d = 2, scale = 1, step_size = 0.1, iterations = 200, 
         prior_method = "normal", prior_std = 2, 
         target_method = "laplace", b = 1, var_bool = False, 
         wass_cutoff = 0.01, parallel = True):
@@ -114,13 +114,13 @@ def run(sample_size = 5000, simulation_num = 200,
     names = [optimizers_list[k].name for k in range(opt_num)]
     
     # Make prior sample data
-    prior_sample = prior_sample.sample_prior(sample_size=sample_size, d=d, method=prior_method, std=prior_std)
+    _prior_sample = prior_sample.sample_prior(sample_size=sample_size, d=d, method=prior_method, std=prior_std)
 
     # Make initial metric calculation
     target_quantiles = target_dist.get_quantiles(sample_size=sample_size)
 
     metric_result = [sliced_wasserstein(sample_size=sample_size, target=target_quantiles,
-                                        sample=prior_sample, d=d, cutoff=wass_cutoff)]
+                                        sample=_prior_sample, d=d, cutoff=wass_cutoff)]
 
     # Define training function for each optimizer
     def train(vect, optimizer, metric_result):
@@ -136,14 +136,14 @@ def run(sample_size = 5000, simulation_num = 200,
         # Parallelize the training process by optimizers
         print("____Start training process____")
         pool = Parallel(n_jobs = opt_num, backend = 'loky', verbose = 51, pre_dispatch = 'all')
-        results = pool(delayed(train)(vect=prior_sample.copy(), optimizer=optimizers_list[k], 
+        results = pool(delayed(train)(vect=_prior_sample.copy(), optimizer=optimizers_list[k], 
                                     metric_result=metric_result.copy()) for k in range(opt_num))
     else:
         # Run the training process without parallelization
         results = []
         for k in range(opt_num):
             print(f"Current optimizer is {names[k]}")
-            results.append(train(vect=prior_sample.copy(), optimizer=optimizers_list[k], 
+            results.append(train(vect=_prior_sample.copy(), optimizer=optimizers_list[k], 
                                     metric_result=metric_result.copy()))
         
     return results, names

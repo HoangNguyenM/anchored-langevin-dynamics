@@ -30,7 +30,8 @@ def run(sample_size = 50, simulation_num = 200,
     # Gaussian smoothing optimizers
     optimizers_list.append(optimizers.vanilla_LD_Gauss_smooth(step_size = step_size))
     optimizers_list.append(optimizers.vanilla_anchored_LD_Gauss_smooth(step_size = step_size))
-    # optimizers_list.append(optimizers.vanilla_time_change_LD_Gauss_smooth(step_size = step_size))
+    # uncomment to add time change Langevin optimizer
+    #optimizers_list.append(optimizers.vanilla_time_change_LD_Gauss_smooth(step_size = step_size))
 
     # Save optimizers names
     opt_num = len(optimizers_list)
