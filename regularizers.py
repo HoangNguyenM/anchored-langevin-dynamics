@@ -1,7 +1,7 @@
 import numpy as np
 
 # Define regularizers
-# x has shape (batch_size, sample_size, d), output has shape (batch_size, sample_size)
+# x has shape (simulation_num, sample_size, d), output has shape (simulation_num, sample_size)
 def get_regularizer(reg_name, *, coef = 1, a = 10):
     def Lasso(x):
         return np.sum(np.abs(x), axis = -1) * coef

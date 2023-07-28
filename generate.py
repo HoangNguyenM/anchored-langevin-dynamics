@@ -2,7 +2,7 @@ import numpy as np
 import scipy.special as sp
 from joblib import Parallel, delayed
 from matplotlib import pyplot as plt
-import optimizers, prior_sample
+import optimizers
 
 def wasserstein(sample_size, target, sample, cutoff=0.01):
     """Calculate 1-dimensional Wasserstein distance between two sets of data
@@ -34,7 +34,7 @@ class Laplace():
     Args:
         mean = 0, std = 1 by default
         b: hyperparameter of Laplace distribution, sigma: covariance matrix
-        x: the sample of data, have size (batch_size, sample_size, d)
+        x: the sample of data, have size (simulation_num, sample_size, d)
     """
     def __init__(self, b=1/(2**0.5), d=1, sigma=np.identity(1)):
         self.b = b
@@ -43,12 +43,12 @@ class Laplace():
         self.inv_sigma = np.linalg.inv(sigma)
         self.det_sigma = np.linalg.det(self.sigma)
 
-    # pdf calculation (take -log for Langevin exponent) for d=1, output has size (batch_size, sample_size,)
+    # pdf calculation (take -log for Langevin exponent) for d=1, output has size (simulation_num, sample_size,)
     def get_fn_value_1d(self,x):
         f = np.log(2*self.b)+np.abs(x[:,:,0]/self.b)
         return f
 
-    # pdf calculation (take -log for Langevin exponent) for d>1, output has size (batch_size, sample_size,)
+    # pdf calculation (take -log for Langevin exponent) for d>1, output has size (simulation_num, sample_size,)
     def get_fn_value_high_d(self,x):
         v = (2-self.d)/2
         product = np.matmul(np.matmul(np.transpose(x[...,None],(0,1,3,2)),self.inv_sigma),x[...,None])
@@ -67,25 +67,30 @@ class Laplace():
         right_quantiles = -np.log(2-2*right_half) * self.b
         return np.concatenate((left_quantiles,right_quantiles))
     
-def main(scale=1, step_size=0.1, iterations=200):
-    # Define hyperparameters
-    sample_size = 1000
-    d = 2
-
-    prior_method = "normal"
-    std = 10**0.5
-
-    target_method = "laplace"
-    b = 1/(2**0.5)
-    var = np.identity(d)
-    # var[0,1] = 0.5
-    # var[1,0] = 0.5
-    wass_cutoff = 0.01
-
-    batch_size = 200
-
-    parallel = True
+def run(sample_size = 5000, simulation_num = 200, 
+        d = 2, scale=1, step_size=0.1, iterations=200, 
+        prior_method = "normal", prior_std = 2, 
+        target_method = "laplace", b = 1, var_bool = False, 
+        wass_cutoff = 0.01, parallel = True):
     
+    """Generate Laplace distribution
+    Args:
+        sample_size: the number of points generated
+        simulation_num: the number of Monte Carlo simulation for Gaussian smoothing
+        d: dimension of the data generated
+        prior_method: prior data distribution, mean = 0 by default
+        prior_std: std of the prior data distribution
+        target_method: the target distribution to be generated, only Laplace supported
+        b: hyperparameter of Laplace distribution
+        parallel: if True, run parallel over CPU cores
+    """
+
+    # make variance matrix
+    var = np.identity(d)
+    if var_bool:
+        var[0,1] = 0.5
+        var[1,0] = 0.5
+        
     # Define optimizers
     optimizers_list = []
     target_dist = Laplace(b=b, d=d, sigma=var)
@@ -97,18 +102,19 @@ def main(scale=1, step_size=0.1, iterations=200):
         raise ValueError(f"Dimension {d} not supported.")
 
     optimizers_list.append(optimizers.LD_Gauss_smooth(fn_value=fn_value, 
-                                                      batch_size=batch_size, scale=scale, step_size=step_size))
+                                                      simulation_num=simulation_num, scale=scale, step_size=step_size))
     optimizers_list.append(optimizers.anchored_LD_Gauss_smooth(fn_value=fn_value, 
-                                                      batch_size=batch_size, scale=scale, step_size=step_size))
-    # optimizers_list.append(optimizers.time_change_LD_Gauss_smooth(fn_value=fn_value, 
-    #                                                   batch_size=batch_size, scale=scale, step_size=step_size))
+                                                      simulation_num=simulation_num, scale=scale, step_size=step_size))
+    # uncomment to add time change Langevin optimizer
+    #optimizers_list.append(optimizers.time_change_LD_Gauss_smooth(fn_value=fn_value, 
+    #                                                  simulation_num=simulation_num, scale=scale, step_size=step_size))
 
     # Save optimizers names
     opt_num = len(optimizers_list)
     names = [optimizers_list[k].name for k in range(opt_num)]
     
     # Make prior sample data
-    prior_sample = prior_sample.sample_prior(sample_size=sample_size, d=d, method=prior_method, std=std)
+    prior_sample = prior_sample.sample_prior(sample_size=sample_size, d=d, method=prior_method, std=prior_std)
 
     # Make initial metric calculation
     target_quantiles = target_dist.get_quantiles(sample_size=sample_size)
@@ -143,41 +149,57 @@ def main(scale=1, step_size=0.1, iterations=200):
     return results, names
 
 ### The main code ###
+if __name__ == "__main__":
+    # Define hyperparameters
+    sample_size = 1000
+    d = 2
 
-scales_list = [0.1, 0.5]
-step_sizes_list = [0.01] * len(scales_list)
-iterations = 500
-epsilon = 0.2
+    prior_method = "normal"
+    prior_std = 10**0.5
 
-# For single scale test
-if len(scales_list) < 2:
-    results, names = main(scale=scales_list[0], step_size=step_sizes_list[0], iterations=iterations)
+    target_method = "laplace"
+    b = 1/(2**0.5)
 
-    x = [i for i in range(len(results[0]))]
-    for i in range(len(results)):
-        plt.plot(x, results[i], label = names[i])
-    plt.ylabel('Wasserstein distance')
-    plt.xlabel('Iteration')
-    plt.legend()
-    plt.show()
+    scales_list = [0.1, 0.5]
+    step_sizes_list = [0.01] * len(scales_list)
+    iterations = 500
+    epsilon = 0.2
 
-# For multiple scale test
-else:
-    results_list = []
-    names_list = []
+    # For single scale test
+    if len(scales_list) < 2:
+        results, names = run(sample_size=sample_size, d=2, 
+                             scale=scales_list[0], step_size=step_sizes_list[0], iterations=iterations, 
+                             prior_method=prior_method, prior_std=prior_std,
+                             target_method=target_method, b=b, var_bool=False)
 
-    for i in range(len(scales_list)):
-        results, names = main(scale=scales_list[i], step_size=step_sizes_list[i], iterations=iterations)
-        results_list.append(results)
-        names_list.append(names)
+        x = [i for i in range(len(results[0]))]
+        for i in range(len(results)):
+            plt.plot(x, results[i], label = names[i])
+        plt.ylabel('Wasserstein distance')
+        plt.xlabel('Iteration')
+        plt.legend()
+        plt.show()
 
-    for j in range(len(results_list[0])):
+    # For multiple scale test
+    else:
+        results_list = []
+        names_list = []
+
         for i in range(len(scales_list)):
-            plt.plot([i for i in range(len(results_list[i][j]))], results_list[i][j], 
-                     label = names_list[i][j] + ' @ scales=' + str(scales_list[i]) + ', lr=' + str(step_sizes_list[i]))
-    plt.axhline(y = epsilon, linestyle = 'dashed', label = 'y = ' + str(epsilon)) 
+            results, names = run(sample_size=sample_size, d=2, 
+                                scale=scales_list[i], step_size=step_sizes_list[i], iterations=iterations, 
+                                prior_method=prior_method, prior_std=prior_std,
+                                target_method=target_method, b=b, var_bool=False)
+            results_list.append(results)
+            names_list.append(names)
 
-    plt.ylabel('Wasserstein distance')
-    plt.xlabel('Iteration')
-    plt.legend()
-    plt.show()
+        for j in range(len(results_list[0])):
+            for i in range(len(scales_list)):
+                plt.plot([i for i in range(len(results_list[i][j]))], results_list[i][j], 
+                        label = names_list[i][j] + ' @ scales=' + str(scales_list[i]) + ', lr=' + str(step_sizes_list[i]))
+        plt.axhline(y = epsilon, linestyle = 'dashed', label = 'y = ' + str(epsilon)) 
+
+        plt.ylabel('Wasserstein distance')
+        plt.xlabel('Iteration')
+        plt.legend()
+        plt.show()

@@ -71,13 +71,13 @@ class NN():
         prior weights have size (sample_size, nnodes, features) for layer 1 and (sample_size, 1, nnodes) for layer 2
         optimizer: the optimizer
     """
-    def __init__(self, nnodes, x, y_true, prior1, prior2, optimizer, runs = 20, batch_size = 500, scale = 1, lr = 0.1):
+    def __init__(self, nnodes, x, y_true, prior1, prior2, optimizer, runs = 20, simulation_num = 500, scale = 1, lr = 0.1):
         self.nnodes = nnodes
         self.lr = lr
         self.x = x
         self.y_true = np.array([y_true] * runs)
         self.optimizer = optimizer
-        self.batch_size = batch_size
+        self.simulation_num = simulation_num
         self.scale = scale
         
         self.L1 = NN_layer(nnodes=nnodes, activation=self.relu, prior=prior1)
@@ -96,19 +96,19 @@ class NN():
         return np.maximum(np.sign(x), np.full(x.shape, 0))
     
     # run through the neural network
-    # w1 has shape (batch_size, sample_size, nnodes, features)
-    # w2 has shape (batch_size, sample_size, 1, nnodes)
-    # output has shape (batch_size, sample_size, observation_size)
+    # w1 has shape (simulation_num, sample_size, nnodes, features)
+    # w2 has shape (simulation_num, sample_size, 1, nnodes)
+    # output has shape (simulation_num, sample_size, observation_size)
     def forward(self, w1, w2):
         relu_input = np.matmul(w1, self.x.transpose())
-        relu_output = self.L1.activation(relu_input) # (batch_size, sample_size, nnodes, observation_size)
-        sigmoid_input = np.matmul(w2, relu_output) # (batch_size, sample_size, 1, observation_size)
+        relu_output = self.L1.activation(relu_input) # (simulation_num, sample_size, nnodes, observation_size)
+        sigmoid_input = np.matmul(w2, relu_output) # (simulation_num, sample_size, 1, observation_size)
         probability = self.L2.activation(sigmoid_input[:,:,0,:])
         return probability
     
     # compute cross entropy loss
-    # y_pred has shape (batch_size, sample_size, observation_size)
-    # output has shape (batch_size, sample_size)
+    # y_pred has shape (simulation_num, sample_size, observation_size)
+    # output has shape (simulation_num, sample_size)
     def compute_loss(self, y_pred):
         y_true = np.array([self.y_true] * y_pred.shape[0])
         y_zero_loss = np.real(y_true * np.log(y_pred + 1e-9))
@@ -117,16 +117,16 @@ class NN():
 
     def compute_gradients(self):
         # Use Gaussian smoothing to approximate the gradients of L1 weight
-        noise1 = np.random.normal(0,1,tuple([self.batch_size]) + self.L1.weight.shape) # (batch_size, sample_size, nnodes, features)
-        probability1 = self.forward(w1 = np.array([self.L1.weight]*self.batch_size)+self.scale*noise1, w2 = np.array([self.L2.weight]*self.batch_size))
+        noise1 = np.random.normal(0,1,tuple([self.simulation_num]) + self.L1.weight.shape) # (simulation_num, sample_size, nnodes, features)
+        probability1 = self.forward(w1 = np.array([self.L1.weight]*self.simulation_num)+self.scale*noise1, w2 = np.array([self.L2.weight]*self.simulation_num))
         loss_batch1 = self.compute_loss(probability1)
 
         grad1 = np.mean(loss_batch1[...,None,None] * noise1, axis=0)/self.scale
         ref_loss1 = np.mean(loss_batch1, axis=0)
 
         # # Use Gaussian smoothing to approximate the gradients of L2 weight
-        # noise2 = np.random.normal(0,1,tuple([self.batch_size]) + self.L2.weight.shape) # (batch_size, sample_size, 1, nnodes)
-        # probability2 = self.forward(w1 = np.array([self.L1.weight]*self.batch_size), w2 = np.array([self.L2.weight]*self.batch_size)+self.scale*noise2)
+        # noise2 = np.random.normal(0,1,tuple([self.simulation_num]) + self.L2.weight.shape) # (simulation_num, sample_size, 1, nnodes)
+        # probability2 = self.forward(w1 = np.array([self.L1.weight]*self.simulation_num), w2 = np.array([self.L2.weight]*self.simulation_num)+self.scale*noise2)
         # loss_batch2 = self.compute_loss(probability2)
 
         # grad2 = np.mean(loss_batch2[...,None,None] * noise2, axis=0)/self.scale
