@@ -96,12 +96,12 @@ def run(sample_size = 50, simulation_num = 200,
 if __name__ == "__main__":
     # Define hyperparameters
     sample_size = 40
-    simulation_num = 200
+    simulation_num = 20
 
     data_name = 'cancer'
 
     # coefficients for defining the regularizer
-    coef = 1
+    coef = 10
     a = 10
 
     # coefficients for deterministic smoothing
@@ -109,7 +109,7 @@ if __name__ == "__main__":
     l2_coef = 0.5
 
     # regularizer can be 'Lasso', 'SCAD' or 'MCP'
-    reg_name = 'SCAD'
+    reg_name = 'Lasso'
 
     scales_list = [0.5, 1]
     lr_list = [0.01, 0.02]

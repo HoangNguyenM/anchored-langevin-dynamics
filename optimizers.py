@@ -1,5 +1,62 @@
 import numpy as np
 
+class Vanilla_LD():
+    """Create the base line functions for vanilla LD
+    Args:
+        fn_value: the function to calculate target pdf value, takes input (simulation_num, sample_size, d) and output (simulation_num, sample_size,)
+        simulation_num: number of Monte Carlo simulations
+        scale: the coefficient of noise
+        x: the sample of data, have size (sample_size, d)
+    """
+    def __init__(self, grad_value, step_size):
+        self.step_size = step_size
+        self.grad_value = grad_value
+        self.name = "LD"
+    
+    def get_ref_grad(self, x):
+        return self.grad_value(x[None, ...])[0, :]
+    
+    def update_step(self, vect, grad):
+        drift = -self.step_size * grad
+        diffusion = np.random.normal(0,1,vect.shape) * (2*self.step_size)**0.5
+        update = drift + diffusion
+        return update
+    
+class Vanilla_anchored_LD_smooth():
+    """Create the base line functions for anchored LD with custom smoothing
+    Args:
+        fn_value: the function to calculate target pdf value, takes input (simulation_num, sample_size, d) and output (simulation_num, sample_size,)
+        simulation_num: number of Monte Carlo simulations
+        scale: the coefficient of noise
+        x: the sample of data, have size (sample_size, d)
+    """
+    def __init__(self, fn_value, ref_value, grad_value, step_size):
+        self.step_size = step_size
+        self.fn_value = fn_value
+        self.ref_value = ref_value
+        self.grad_value = grad_value
+        self.name = "Anchored LD"
+
+    def get_fn(self, x):
+        return self.fn_value(x[None, ...])[0, :]
+
+    def get_ref(self, x):
+        return self.ref_value(x[None, ...])[0, :]
+    
+    def get_ref_grad(self, x):
+        return self.grad_value(x[None, ...])[0, :]
+    
+    # one step of updating the vect
+    def update_step(self, vect, grad):
+        # get f and ref values, each has size (sample_size,)
+        f_value = self.get_fn(vect)
+        ref_value = self.get_ref(vect)
+
+        drift = -self.step_size * grad * np.exp(f_value-ref_value)[:, None]
+        diffusion = np.random.normal(0,1,vect.shape) * np.exp((f_value-ref_value)/2)[:, None] * (2*self.step_size)**0.5
+        update = drift + diffusion
+        return update
+
 class Gauss_smooth():
     """Create the base line functions for Gaussian smoothing
     Args:
@@ -44,7 +101,7 @@ class anchored_LD_Gauss_smooth(Gauss_smooth):
     def __init__(self, fn_value, simulation_num=300, scale=1, step_size=0.1):
         super().__init__(fn_value, simulation_num, scale)
         self.step_size = step_size
-        self.name = "Anchored LD"
+        self.name = "Anchored LD Gauss"
 
     # one step of updating the vect
     def update_step(self, vect, grad):
@@ -62,7 +119,7 @@ class time_change_LD_Gauss_smooth(Gauss_smooth):
     def __init__(self, fn_value, simulation_num=300, scale=1, step_size=0.1):
         super().__init__(fn_value, simulation_num, scale)
         self.step_size = step_size
-        self.name = "Time change anchored LD"
+        self.name = "Time Anchored LD Gauss"
 
     # one step of updating the vect
     def update_step(self, vect, grad):
@@ -127,7 +184,7 @@ class time_change_LD_reg_smooth(Deterministic_smooth):
     def __init__(self, fn_value, ref_value, grad_value, step_size=0.1):
         super().__init__(fn_value, ref_value, grad_value)
         self.step_size = step_size
-        self.name = "Time change anchored LD"
+        self.name = "Time Anchored LD"
 
     # one step of updating the vect
     def update_step(self, vect, grad):
@@ -145,7 +202,7 @@ class vanilla_LD_Gauss_smooth():
 # Overdamped LD with Gaussian smoothing
     def __init__(self, step_size=0.1):
         self.step_size = step_size
-        self.name = "LD"
+        self.name = "LD Gauss"
 
     # one step of updating the vect
     # vect has shape (sample_size, ., .)
@@ -159,7 +216,7 @@ class vanilla_anchored_LD_Gauss_smooth():
 # Anchored LD with Gaussian smoothing
     def __init__(self, step_size=0.1):
         self.step_size = step_size
-        self.name = "Anchored LD"
+        self.name = "Anchored LD Gauss"
 
     # one step of updating the vect
     def update_step(self, vect, grad, loss, ref):
@@ -174,7 +231,7 @@ class vanilla_time_change_LD_Gauss_smooth():
 # Time change anchored LD with Gaussian smoothing
     def __init__(self, step_size=0.1):
         self.step_size = step_size
-        self.name = "Time change anchored LD"
+        self.name = "Time Anchored LD Gauss"
 
     # one step of updating the vect
     def update_step(self, vect, grad, loss, ref):

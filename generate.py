@@ -67,60 +67,210 @@ class Laplace():
         right_quantiles = -np.log(2-2*right_half) * self.b
         return np.concatenate((left_quantiles,right_quantiles))
     
-def run(sample_size = 5000, simulation_num = 200, 
-        d = 2, scale = 1, step_size = 0.1, iterations = 200, 
-        prior_method = "normal", prior_std = 2, 
-        target_method = "laplace", b = 1, var_bool = False, 
-        wass_cutoff = 0.01, parallel = True):
-    
-    """Generate Laplace distribution
-    Args:
-        sample_size: the number of points generated
-        simulation_num: the number of Monte Carlo simulation for Gaussian smoothing
-        d: dimension of the data generated
-        prior_method: prior data distribution, mean = 0 by default
-        prior_std: std of the prior data distribution
-        target_method: the target distribution to be generated, only Laplace supported
-        b: hyperparameter of Laplace distribution
-        parallel: if True, run parallel over CPU cores
-    """
 
-    # make variance matrix
-    var = np.identity(d)
-    if var_bool:
-        var[0,1] = 0.5
-        var[1,0] = 0.5
+class PolyTailGibbs:
+    r"""
+    Polynomial–tail Gibbs distribution   π(x) ∝ (1 + xᵀΣ⁻¹x)^(-ι)
+
+    Parameters
+    ----------
+    iota : float
+        Shape parameter ι (>1+d/2) that controls the power‑law decay.
+    d : int, optional
+        Dimension of the ambient space (default 1).
+    sigma : ndarray, optional
+        Positive–definite scale / covariance matrix Σ (default identity).
+
+    """
+    def __init__(self, iota, beta=None, d=1, sigma=None):
+        if sigma is None:
+            sigma = np.identity(d)
+        if d != sigma.shape[0]:
+            raise ValueError("σ must be d×d")
+        print("PolyTailGibbs: d =", d, "iota =", iota, "beta =", beta, "Σ =", sigma)
+        if iota <= 1 + d/2:
+            raise ValueError("require iota > 1 + d/2")
+        if beta is None:
+            beta = self.iota
+        if beta <= d / 2.0:
+            raise ValueError("require β > d/2")
         
-    # Define optimizers
+
+        self.iota      = float(iota)
+        self.beta      = float(beta)
+        self.d         = int(d)
+        self.sigma     = sigma
+        self.inv_sigma = np.linalg.inv(sigma)
+        self.det_sigma = float(np.linalg.det(sigma))
+
+        self._log_c = ( sp.gammaln(self.iota)
+                      - (self.d/2.0)*np.log(np.pi)
+                      - sp.gammaln(self.iota - self.d/2.0) )
+
+    def get_fn_value_1d(self, x):
+        """
+        x : array (sim_num, sample_size, 1)
+
+        Returns
+        -------
+        f : array (sim_num, sample_size)
+            −log π(x)
+        """
+        z2      = x[:, :, 0]**2
+        logpdf  = self._log_c - self.iota * np.log1p(z2)
+        return -logpdf
+
+    def get_fn_value_high_d(self, x):
+        """
+        x : array (sim_num, sample_size, d)
+
+        Returns
+        -------
+        f : array (sim_num, sample_size)
+            −log π(x)
+        """
+        # quadratic form  q = xᵀ Σ⁻¹ x
+        q = np.einsum('...i,ij,...j->...', x, self.inv_sigma, x)
+
+        logpdf = (  self._log_c
+                  - 0.5*np.log(self.det_sigma)
+                  - self.iota * np.log1p(q) )
+
+        return -logpdf
+    
+    # reference potential  U₀(x) = β log(1+‖x‖²)
+    def get_ref_fn_value(self, x):
+        """
+        Heavy‑tailed reference potential  U₀(x) = β log(1+‖x‖²).
+
+        Parameters
+        ----------
+        x : ndarray, shape (simulation_num, sample_size, d)
+            Input samples.
+
+        Returns
+        -------
+        U0 : ndarray, shape (simulation_num, sample_size)
+            Value of U₀(x) for each sample.
+        """
+        q = np.sum(x**2, axis=-1)   # shape (sim_num, sample_size)
+        return self.beta * np.log1p(q)
+
+    def get_grad_value(self, x):
+        r"""
+        Gradient of   U(x) = −log π(x)
+        U(x) = ι·log(1 + xᵀΣ⁻¹x)   (additive constants irrelevant)
+
+        Parameters
+        ----------
+        x : ndarray, shape (sim_num, sample_size, d)
+
+        Returns
+        -------
+        grad : ndarray, same shape as x
+            ∇U(x)
+        """
+        # shape  (sim_num, sample_size)
+        q = np.einsum('...i,ij,...j->...', x, self.inv_sigma, x)
+
+        # shape  (sim_num, sample_size, d)
+        invx = np.einsum('...j,ij->...i', x, self.inv_sigma)
+
+        # ∇U = 2ι / (1+q) · Σ⁻¹ x
+        factor = 2.0 * self.iota / (1.0 + q)[..., None]
+        grad   = factor * invx
+        return grad
+
+    # ∇U₀(x)  --- gradient of reference potential  β·log(1+‖x‖²)
+    def get_ref_grad_value(self, x):
+        """
+        U₀(x) = β log(1 + ‖x‖²),   β > d/2.
+
+        Parameters
+        ----------
+        x : ndarray, shape (sim_num, sample_size, d)
+
+        Returns
+        -------
+        grad : ndarray, same shape as x
+            ∇U₀(x)
+        """
+        # squared Euclidean norm  r² = ‖x‖²
+        r2 = np.sum(x**2, axis=-1)  # shape (sim_num, sample_size)
+
+        # ∇U₀ = 2β / (1 + r²) · x
+        factor = 2.0 * self.beta / (1.0 + r2)[..., None]
+        grad   = factor * x
+        return grad
+
+    # 1‑D quantiles (symmetrically around 0, Laplace‑style grid)
+    def get_quantiles(self, sample_size):
+        if sample_size < 4 or sample_size % 2 != 0:
+            raise ValueError("sample_size must be an even integer ≥ 4")
+
+
+        left  = np.linspace(1/sample_size, 0.5,           num=sample_size//2)
+        right = np.linspace(0.5+1/sample_size, 1-1/sample_size,
+                            num=sample_size//2 - 1)
+        p     = np.concatenate((left, right))   # shape (nq,)
+
+        z  = np.abs(2*p - 1.0)
+        s  = sp.betaincinv(0.5, self.iota - 0.5, z)
+        q  = np.sign(p - 0.5) * np.sqrt(s / (1.0 - s))
+
+        return q
+
+def get_optimizers_list(target_dist, simulation_num = 200, 
+        d = 2, scales_list = [1], step_sizes_list = [0.1],
+):
     optimizers_list = []
-    target_dist = Laplace(b=b, d=d, sigma=var)
+    
     if d == 1:
         fn_value = target_dist.get_fn_value_1d
     elif d > 1:
         fn_value = target_dist.get_fn_value_high_d
     else:
         raise ValueError(f"Dimension {d} not supported.")
-
-    optimizers_list.append(optimizers.LD_Gauss_smooth(fn_value=fn_value, 
-                                                      simulation_num=simulation_num, scale=scale, step_size=step_size))
-    optimizers_list.append(optimizers.anchored_LD_Gauss_smooth(fn_value=fn_value, 
-                                                      simulation_num=simulation_num, scale=scale, step_size=step_size))
-    # uncomment to add time change Langevin optimizer
-    #optimizers_list.append(optimizers.time_change_LD_Gauss_smooth(fn_value=fn_value, 
-    #                                                  simulation_num=simulation_num, scale=scale, step_size=step_size))
-
-    # Save optimizers names
-    opt_num = len(optimizers_list)
-    names = [optimizers_list[k].name for k in range(opt_num)]
     
-    # Make prior sample data
-    _prior_sample = prior_sample.sample_prior(sample_size=sample_size, d=d, method=prior_method, std=prior_std)
+    for step_size in step_sizes_list:
+        optimizers_list.append(optimizers.Vanilla_LD(grad_value=target_dist.get_grad_value, 
+                                                    step_size=step_size))
+        optimizers_list.append(optimizers.Vanilla_anchored_LD_smooth(fn_value=target_dist.get_fn_value_1d, 
+                                                                    ref_value=target_dist.get_ref_fn_value,
+                                                                    grad_value=target_dist.get_ref_grad_value, 
+                                                                    step_size=step_size))
+        
+        # for scale in scales_list:
+            # optimizers_list.append(optimizers.LD_Gauss_smooth(fn_value=fn_value, 
+            #                                                   simulation_num=simulation_num, scale=scale, step_size=step_size))
+            # optimizers_list.append(optimizers.anchored_LD_Gauss_smooth(fn_value=fn_value, 
+            #                                                 simulation_num=simulation_num, scale=scale, step_size=step_size))
 
+            # optimizers_list.append(optimizers.time_change_LD_Gauss_smooth(fn_value=fn_value, 
+            #                                                  simulation_num=simulation_num, scale=scale, step_size=step_size))
+        
+    return optimizers_list
+
+def get_names_list(optimizers_list):
+    names_list = []
+    for optimizer in optimizers_list:
+        if 'Gauss' in optimizer.name:
+            names_list.append(optimizer.name + ' @ scales=' + str(optimizer.scale) + ', lr=' + str(optimizer.step_size))
+        else:
+            names_list.append(optimizer.name + ' @ lr=' + str(optimizer.step_size))
+    return names_list
+
+def run(target_dist, optimizers_list, names_list, sample_size = 5000,
+        d = 2, iterations = 200, 
+        _prior_sample = None, 
+        wass_cutoff = 0.01, parallel = True):
+    
+    opt_num = len(optimizers_list)
     # Make initial metric calculation
-    target_quantiles = target_dist.get_quantiles(sample_size=sample_size)
+    target_quantiles = target_dist.get_quantiles(sample_size=sample_size+2)
 
     metric_result = [sliced_wasserstein(sample_size=sample_size, target=target_quantiles,
-                                        sample=_prior_sample, d=d, cutoff=wass_cutoff)]
+                                        sample=_prior_sample.copy(), d=d, cutoff=wass_cutoff)]
 
     # Define training function for each optimizer
     def train(vect, optimizer, metric_result):
@@ -142,64 +292,73 @@ def run(sample_size = 5000, simulation_num = 200,
         # Run the training process without parallelization
         results = []
         for k in range(opt_num):
-            print(f"Current optimizer is {names[k]}")
+            print(f"Current optimizer is {names_list[k]}")
             results.append(train(vect=_prior_sample.copy(), optimizer=optimizers_list[k], 
                                     metric_result=metric_result.copy()))
-        
-    return results, names
+
+    return results
 
 ### The main code ###
 if __name__ == "__main__":
     # Define hyperparameters
-    sample_size = 1000
-    d = 2
+    sample_size = 5000
+    simulation_num = 500
+    d = 1
 
     prior_method = "normal"
-    prior_std = 10**0.5
+    prior_std = 10 ** 0.5
+    var_bool = False
 
-    target_method = "laplace"
+    # target_method = "laplace"
+    target_method = "poly_tail_gibbs"
     b = 1/(2**0.5)
+    iota = 2
+    beta = 1
 
-    scales_list = [0.1, 0.5]
-    step_sizes_list = [0.01] * len(scales_list)
-    iterations = 500
+    scales_list = [1, 2]
+    step_sizes_list = [0.01]
+    iterations = 1000
     epsilon = 0.2
 
-    # For single scale test
-    if len(scales_list) < 2:
-        results, names = run(sample_size=sample_size, d=2, 
-                             scale=scales_list[0], step_size=step_sizes_list[0], iterations=iterations, 
-                             prior_method=prior_method, prior_std=prior_std,
-                             target_method=target_method, b=b, var_bool=False)
+    # make variance matrix
+    var = np.identity(d)
+    if var_bool:
+        var[0,1] = 0.5
+        var[1,0] = 0.5
 
-        x = [i for i in range(len(results[0]))]
-        for i in range(len(results)):
-            plt.plot(x, results[i], label = names[i])
-        plt.ylabel('Wasserstein distance')
-        plt.xlabel('Iteration')
-        plt.legend()
-        plt.show()
-
-    # For multiple scale test
+    if target_method == "laplace":
+        target_dist = Laplace(b=b, d=d, sigma=var)
+    elif target_method == "poly_tail_gibbs":
+        target_dist = PolyTailGibbs(iota=iota, beta=beta, d=d, sigma=var)
     else:
-        results_list = []
-        names_list = []
+        raise ValueError(f"Target distribution {target_method} not supported.")
 
-        for i in range(len(scales_list)):
-            results, names = run(sample_size=sample_size, d=2, 
-                                scale=scales_list[i], step_size=step_sizes_list[i], iterations=iterations, 
-                                prior_method=prior_method, prior_std=prior_std,
-                                target_method=target_method, b=b, var_bool=False)
-            results_list.append(results)
-            names_list.append(names)
+    # Make prior sample data
+    _prior_sample = prior_sample.sample_prior(sample_size=sample_size, d=d, method=prior_method, std=prior_std)
 
-        for j in range(len(results_list[0])):
-            for i in range(len(scales_list)):
-                plt.plot([i for i in range(len(results_list[i][j]))], results_list[i][j], 
-                        label = names_list[i][j] + ' @ scales=' + str(scales_list[i]) + ', lr=' + str(step_sizes_list[i]))
-        plt.axhline(y = epsilon, linestyle = 'dashed', label = 'y = ' + str(epsilon)) 
+    optimizers_list = get_optimizers_list(target_dist=target_dist, simulation_num=simulation_num, d=d,
+                                            scales_list=scales_list, step_sizes_list=step_sizes_list)
+    names_list = get_names_list(optimizers_list=optimizers_list)
 
-        plt.ylabel('Wasserstein distance')
-        plt.xlabel('Iteration')
-        plt.legend()
-        plt.show()
+    results_list = []
+    avg_results_list = []
+    repeat = 100
+
+    for _ in range(repeat):
+        results = run(target_dist=target_dist, optimizers_list=optimizers_list, names_list=names_list, 
+                    sample_size=sample_size, d=d, iterations=iterations, _prior_sample=_prior_sample.copy(), 
+                    wass_cutoff=0.01, parallel=True)
+        results_list.append(results)
+    for i in range(len(optimizers_list)):
+        avg_result = np.mean(np.stack([results_list[j][i] for j in range(repeat)], axis=-1), axis=-1)
+        avg_results_list.append(avg_result)
+
+    for result, label in zip(avg_results_list, names_list):
+        plt.plot([i for i in range(len(result))], result, 
+                label = label)
+    plt.axhline(y = epsilon, linestyle = 'dashed', label = 'y = ' + str(epsilon)) 
+
+    plt.ylabel('Wasserstein distance')
+    plt.xlabel('Iteration')
+    plt.legend()
+    plt.show()
